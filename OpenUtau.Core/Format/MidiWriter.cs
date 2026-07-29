@@ -10,283 +10,272 @@ using UtfUnknown;
 using System.Linq;
 
 namespace OpenUtau.Core.Format {
-    public class EncodingDetector {
 
-        MemoryStream stream = new MemoryStream();
+    // Detect uncommon encodings other than UTF-8
+    public class EncodingDetector {
+        private readonly MemoryStream stream = new MemoryStream();
 
         public void ReadFile(string file) {
-            var ReadingSettings = MidiWriter.BaseReadingSettings();
-            
-            ReadingSettings.DecodeTextCallback = new DecodeTextCallback(AddText);
-            var midi = MidiFile.Read(file,ReadingSettings);
+            // Clean in case of reuse
+            stream.Position = 0;
+            stream.SetLength(0);
+
+            var settings = MidiWriter.BaseReadingSettings();
+
+            // Intercept raw byte array as MIDI is parsed
+            settings.DecodeTextCallback = (bytes, _) => {
+                stream.Write(bytes, 0, bytes.Length);
+                return string.Empty;            
+            };
+
+            MidiFile.Read(file, settings);
         }
 
-        string AddText(byte[] bytes, ReadingSettings settings) {
-            stream.Write(bytes);
-            return "";
-        }
 
         public Encoding Detect() {
             stream.Seek(0, SeekOrigin.Begin);
-            var detectionResult = CharsetDetector.DetectFromStream(stream);
-            if (detectionResult.Detected != null && detectionResult.Detected.Confidence > 0.5) {
-                return detectionResult.Detected.Encoding;
-            } else {
-                return null;
-            }
+            var result = CharsetDetector.DetectFromStream(stream);
+            // Analyze collected bytes to detect encoding
+            return result.Detected?.Confidence > 0.5 ? result.Detected.Encoding : null;
         }
-    }
+
+    } // class EncodingDetector
+
+
 
     public static class MidiWriter {
-        //Create a blank new project and import data from midi files
-        //Including tempo
-        static public UProject LoadProject(string file) {
-            UProject project = new UProject();
-            Ustx.AddDefaultExpressions(project);
-            project.FilePath = file;
-            // Detects lyric encoding
-            Encoding lyricEncoding = Encoding.UTF8;
-            var encodingDetector = new EncodingDetector();
-            encodingDetector.ReadFile(file);
-            var encodingResult = encodingDetector.Detect();
-            if (encodingResult != null) {
-                lyricEncoding = encodingResult;
-            }
-            //Get midifile resolution
-            var ReadingSettings = BaseReadingSettings();
-            ReadingSettings.TextEncoding = lyricEncoding;
-            var midi = MidiFile.Read(file, ReadingSettings);
-            TicksPerQuarterNoteTimeDivision timeDivision = midi.TimeDivision as TicksPerQuarterNoteTimeDivision;
-            var PPQ = timeDivision.TicksPerQuarterNote;
-            //Parse tempo
-            var tempoMap = midi.GetTempoMap();
-            project.timeSignatures = ParseTimeSignatures(tempoMap, PPQ);
-            project.tempos = ParseTempos(tempoMap, PPQ);
 
-            //Parse tracks
+        // Private helper for duplicate logics
+        private static (MidiFile midi, short ppq) ReadMidi(string file) {
+            var detector = new EncodingDetector();
+            detector.ReadFile(file);
+
+            var settings = BaseReadingSettings();
+            settings.TextEncoding = detector.Detect() ?? Encoding.UTF8;    
+
+            var midi = MidiFile.Read(file, settings);
+            TicksPerQuarterNoteTimeDivision timeDivision = midi.TimeDivision as TicksPerQuarterNoteTimeDivision;
+            
+            return (midi, timeDivision?.TicksPerQuarterNote ?? 480); 
+        } // ReadMidi()
+
+        // Create a blank new project and import data from midi files, including tempo
+        static public UProject LoadProject(string file) {
+            var (midi, ppq) = ReadMidi(file);
+
+            var project = new UProject { FilePath = file };
+            Ustx.AddDefaultExpressions(project);
+
+            var tempoMap = midi.GetTempoMap();
+            project.timeSignatures = ParseTimeSignatures(tempoMap, ppq);
+            project.tempos = ParseTempos(tempoMap, ppq);
             project.tracks = new List<UTrack>();
 
-            var parts = ParseParts(midi, PPQ, project);
-            foreach (var part in parts) {
+            // Convert MIDI tracks into OpenUtau UTrack and UPart
+            foreach (var part in ParseParts(midi, ppq, project)) {
                 var track = new UTrack(project) {
                     TrackNo = project.tracks.Count
                 };
+
                 part.trackNo = track.TrackNo;
                 if(part.name != "New Part"){
                     track.TrackName = part.name;
                 }
+
                 part.AfterLoad(project, track);
                 project.tracks.Add(track);
                 project.parts.Add(part);
             }
+
             project.ValidateFull();
             return project;
-        }
+        } // LoadProject()
 
-        public static ReadingSettings BaseReadingSettings() {
-            return new ReadingSettings {
-                InvalidChannelEventParameterValuePolicy = InvalidChannelEventParameterValuePolicy.ReadValid,
-                InvalidChunkSizePolicy = InvalidChunkSizePolicy.Ignore,
-                InvalidMetaEventParameterValuePolicy = InvalidMetaEventParameterValuePolicy.SnapToLimits,
-                MissedEndOfTrackPolicy = MissedEndOfTrackPolicy.Ignore,
-                NoHeaderChunkPolicy = NoHeaderChunkPolicy.Ignore,
-                NotEnoughBytesPolicy = NotEnoughBytesPolicy.Ignore,
-                UnexpectedTrackChunksCountPolicy = UnexpectedTrackChunksCountPolicy.Ignore,
-                UnknownChannelEventPolicy = UnknownChannelEventPolicy.SkipStatusByteAndOneDataByte,
-                UnknownChunkIdPolicy = UnknownChunkIdPolicy.ReadAsUnknownChunk,
-                UnknownFileFormatPolicy = UnknownFileFormatPolicy.Ignore
-            };
-        }
 
+        public static ReadingSettings BaseReadingSettings() => new() {
+            InvalidChannelEventParameterValuePolicy = InvalidChannelEventParameterValuePolicy.ReadValid,
+            InvalidChunkSizePolicy = InvalidChunkSizePolicy.Ignore,
+            InvalidMetaEventParameterValuePolicy = InvalidMetaEventParameterValuePolicy.SnapToLimits,
+            MissedEndOfTrackPolicy = MissedEndOfTrackPolicy.Ignore,
+            NoHeaderChunkPolicy = NoHeaderChunkPolicy.Ignore,
+            NotEnoughBytesPolicy = NotEnoughBytesPolicy.Ignore,
+            UnexpectedTrackChunksCountPolicy = UnexpectedTrackChunksCountPolicy.Ignore,
+            UnknownChannelEventPolicy = UnknownChannelEventPolicy.SkipStatusByteAndOneDataByte,
+            UnknownChunkIdPolicy = UnknownChunkIdPolicy.ReadAsUnknownChunk,
+            UnknownFileFormatPolicy = UnknownFileFormatPolicy.Ignore
+        };
         
-        //Import tracks to an existing project
+        
+        // Import tracks to an existing project
         static public List<UVoicePart> Load(string file, UProject project) {
-            // Detects lyric encoding
-            Encoding lyricEncoding = Encoding.UTF8;
-            var encodingDetector = new EncodingDetector();
-            encodingDetector.ReadFile(file);
-            var encodingResult = encodingDetector.Detect();
-            if(encodingResult != null) {
-                lyricEncoding = encodingResult;
-            }
-            //Get midifile resolution
-            var ReadingSettings = BaseReadingSettings();
-            ReadingSettings.TextEncoding = lyricEncoding;
-            var midi = MidiFile.Read(file, ReadingSettings);
-            TicksPerQuarterNoteTimeDivision timeDivision = midi.TimeDivision as TicksPerQuarterNoteTimeDivision;
-            var PPQ = timeDivision.TicksPerQuarterNote;
-            return ParseParts(midi, PPQ, project);
+            var (midi, ppq) = ReadMidi(file);
+            return ParseParts(midi, ppq, project);
         }
 
-        public static List<UTempo> ParseTempos(TempoMap tempoMap, short PPQ) {
-            List<UTempo> UTempoList = new List<UTempo>();
-            var changes = tempoMap.GetTempoChanges();
-            if (changes != null && changes.Count() > 0) {
-                var firstTempoTime = changes.First().Time;
-                if (firstTempoTime > 0) {
-                    UTempoList.Add(new UTempo {
-                        position = 0,
-                        bpm = 120.0
-                    });
-                }
-                foreach (var change in changes) {
-                    var tempo = change.Value;
-                    var time = change.Time * 480 / PPQ;
-                    UTempoList.Add(new UTempo {
-                        position = (int)time,
-                        bpm = 60.0 / tempo.MicrosecondsPerQuarterNote * 1000000.0
-                    });
-                }
-            } else {//Midi doesn't contain any tempo change
-                UTempoList.Add(new UTempo {
-                    position = 0,
-                    bpm = 120.0
+
+        public static List<UTempo> ParseTempos(TempoMap tempoMap, short ppq) {
+            var tempos = new List<UTempo>();
+            var changes = tempoMap.GetTempoChanges().ToList();
+
+            // Fallback to baseline 120 BPM
+            if (!changes.Any() || changes[0].Time > 0) {
+                tempos.Add(new UTempo { position = 0, bpm = 120.0 });    
+            }
+
+            foreach (var change in changes) {
+                tempos.Add(new UTempo {
+                    position = (int)(change.Time * 480 / ppq),
+                    bpm = 60.0 / change.Value.MicrosecondsPerQuarterNote * 1000000.0
                 });
             }
-            return UTempoList;
-        }
 
-        public static List<UTimeSignature> ParseTimeSignatures(TempoMap tempoMap, short PPQ) {
-            List<UTimeSignature> UTimeSignatureList = new List<UTimeSignature>();
-            var lastUTimeSignature = new UTimeSignature {
-                barPosition = 0,
-                beatPerBar = 4,
-                beatUnit = 4
-            };
-            var changes = tempoMap.GetTimeSignatureChanges();
-            if (changes != null && changes.Count() > 0) {
-                var firstTimeSignatureTime = changes.First().Time;
-                if (firstTimeSignatureTime > 0) {
-                    UTimeSignatureList.Add(lastUTimeSignature);
-                }
-                int lastTime = 0;
-                foreach (var change in changes) {
-                    var timeSignature = change.Value;
-                    var time = (int)(change.Time) / PPQ;
-                    lastUTimeSignature = new UTimeSignature {
-                        barPosition = lastUTimeSignature.barPosition + (time - lastTime) * lastUTimeSignature.beatUnit / 4 / lastUTimeSignature.beatPerBar,
-                        beatPerBar = timeSignature.Numerator,
-                        beatUnit = timeSignature.Denominator
-                    };
-                    UTimeSignatureList.Add(lastUTimeSignature);
-                    lastTime = time;
-                }
-            } else {
-                UTimeSignatureList.Add(lastUTimeSignature);
+            return tempos;
+        } // ParseTempos()
+
+
+        public static List<UTimeSignature> ParseTimeSignatures(TempoMap tempoMap, short ppq) {
+            var timeSignatures = new List<UTimeSignature>();
+            var current = new UTimeSignature { barPosition = 0, beatPerBar = 4, beatUnit = 4 };
+            var changes = tempoMap.GetTimeSignatureChanges().ToList();
+
+            if (!changes.Any() || changes[0].Time > 0) {
+                timeSignatures.Add(current);
             }
-            return UTimeSignatureList;
-        }
 
-        static List<UVoicePart> ParseParts(MidiFile midi, short PPQ, UProject project) {
-            string defaultLyric = NotePresets.Default.DefaultLyric;
-            List<UVoicePart> resultParts = new List<UVoicePart>();
+            int lastTimeInQuarters = 0;
+            foreach (var change in changes) {
+                int currentTimeInQuarters = (int)change.Time / ppq;
+                int elapsedQuarters = currentTimeInQuarters - lastTimeInQuarters;
+                int elapsedBars = elapsedQuarters * current.beatUnit / (4 * current.beatPerBar);
+
+                current = new UTimeSignature {
+                   barPosition = current.barPosition + elapsedBars,
+                   beatPerBar = change.Value.Numerator,
+                   beatUnit = change.Value.Denominator
+                };
+
+                timeSignatures.Add(current);
+                lastTimeInQuarters = currentTimeInQuarters;
+            }
+            
+            return timeSignatures;
+        } // ParseTimeSignatures()
+
+
+        static List<UVoicePart> ParseParts(MidiFile midi, short ppq, UProject project) {
+            var resultParts = new List<UVoicePart>();
+            var presets = NotePresets.Default;            
+
             foreach (TrackChunk trackChunk in midi.GetTrackChunks()) {
-                var midiNoteList = trackChunk.GetNotes().ToList();
-                if (midiNoteList.Count > 0) {
-                    var part = new UVoicePart();
-                    using (var objectsManager = new TimedObjectsManager<TimedEvent>(trackChunk.Events)) {
-                        var events = objectsManager.Objects;
-                        //{position of lyric: lyric text}
-                        Dictionary<long, string> lyrics = events.Where(e => e.Event is LyricEvent)
-                            .GroupBy(e => e.Time)
-                            .ToDictionary(g=> g.Key, g => ((LyricEvent)g.First().Event).Text);
-                        var trackName = events.Where(e => e.Event is SequenceTrackNameEvent)
-                            .Select(e => ((SequenceTrackNameEvent)e.Event).Text).FirstOrDefault();
-                        if (trackName != null) {
-                            part.name = trackName;
-                        }
-                        foreach (Melanchall.DryWetMidi.Interaction.Note midiNote in midiNoteList) {
-                            var note = project.CreateNote(
-                                midiNote.NoteNumber,
-                                (int)(midiNote.Time * project.resolution / PPQ),
-                                (int)(midiNote.Length * project.resolution / PPQ)
-                            );
-                            //handle lyric import
-                            bool hasLyric = lyrics.TryGetValue(midiNote.Time, out string lyric);
-                            if (!hasLyric) {
-                                lyric = defaultLyric;
-                            }
-                            if (lyric == "-") {
-                                lyric = "+~";
-                            }
-                            note.lyric = lyric;
-                            if (NotePresets.Default.AutoVibratoToggle && note.duration >= NotePresets.Default.AutoVibratoNoteDuration) {
-                                note.vibrato.length = NotePresets.Default.DefaultVibrato.VibratoLength;
-                            }
-                            part.notes.Add(note);
-                        }
-                    }
-                    resultParts.Add(part);
+                var midiNotes = trackChunk.GetNotes().ToList();
+                if (midiNotes.Count == 0) {continue;}
+
+                var part = new UVoicePart();
+                using var objectsManager = new TimedObjectsManager<TimedEvent>(trackChunk.Events);
+                var events = objectsManager.Objects;
+
+                // Extract lyrics dictionary
+                var lyrics = events
+                    .Select(e => (e.Time, Ev: e.Event as LyricEvent))
+                    .Where(x => x.Ev != null)
+                    .GroupBy(x => x.Time)
+                    .ToDictionary(g => g.Key, g => g.First().Ev!.Text);
+
+
+                var trackName = events
+                    .Select(e => e.Event as SequenceTrackNameEvent)
+                    .FirstOrDefault(e => e != null)?.Text;
+
+                if (trackName != null) {
+                    part.name = trackName;
                 }
+
+
+                foreach (var midiNote in midiNotes) {
+                    int pos = (int)(midiNote.Time * project.resolution / ppq);
+                    int len = (int)(midiNote.Length * project.resolution / ppq);
+                    var note = project.CreateNote(midiNote.NoteNumber, pos, len);
+
+                    string rawLyric = lyrics.GetValueOrDefault(midiNote.Time) ?? presets.DefaultLyric;
+                    note.lyric = (rawLyric == "-") ? "+~" : rawLyric;
+
+
+                    if (presets.AutoVibratoToggle && note.duration >= presets.AutoVibratoNoteDuration) {
+                        note.vibrato.length = presets.DefaultVibrato.VibratoLength;
+                    }
+                    
+                    part.notes.Add(note);
+                }
+                
+                resultParts.Add(part);
             }
+
             return resultParts;
-        }
+        } // ParseParts()
+
 
         static public void Save(string filePath, UProject project) {
-            var midiFile = new MidiFile();
-            var trackChunks = new List<TrackChunk> { };
+            var midiFile = new MidiFile {
+                TimeDivision = new TicksPerQuarterNoteTimeDivision((short)project.resolution)
+            };
 
-            //Project resolution
-            midiFile.TimeDivision = new TicksPerQuarterNoteTimeDivision((short)project.resolution);
-            //Tempo
+            // Build TempoMap and Time Signatures
             midiFile.Chunks.Add(new TrackChunk());
-            using (TempoMapManager tempoMapManager = midiFile.ManageTempoMap()) {
-                var lastUTimeSignature = new UTimeSignature {
-                    barPosition = 0,
-                    beatPerBar = 4,
-                    beatUnit = 4
-                };
+            using (var tempoMapManager = midiFile.ManageTempoMap()) {
+                var lastSig = new UTimeSignature { barPosition = 0, beatPerBar = 4, beatUnit = 4 };
                 int lastTime = 0;
-                foreach (UTimeSignature uTimeSignature in project.timeSignatures) {
-                    var time = lastTime + (uTimeSignature.barPosition - lastUTimeSignature.barPosition) * lastUTimeSignature.beatPerBar * 4 / lastUTimeSignature.beatUnit * project.resolution;
-                    tempoMapManager.SetTimeSignature(time, new TimeSignature(uTimeSignature.beatPerBar, uTimeSignature.beatUnit));
-                    lastUTimeSignature = uTimeSignature;
+
+                foreach (var sig in project.timeSignatures) {
+                    int time = lastTime + (sig.barPosition - lastSig.barPosition) * lastSig.beatPerBar * 4 / lastSig.beatUnit * project.resolution;
+                    tempoMapManager.SetTimeSignature(time, new TimeSignature(sig.beatPerBar, sig.beatUnit));
+                    lastSig = sig;
                     lastTime = time;
                 }
-                foreach(UTempo uTempo in project.tempos){
-                    tempoMapManager.SetTempo(uTempo.position, Tempo.FromBeatsPerMinute(uTempo.bpm));
+
+                foreach(var tempo in project.tempos){
+                    tempoMapManager.SetTempo(tempo.position, Tempo.FromBeatsPerMinute(tempo.bpm));
                 }
             }
-            //Time Signature
-            foreach (UTrack track in project.tracks) {
-                var trackChunk = new TrackChunk();
-                using (var objectsManager = new TimedObjectsManager<TimedEvent>(trackChunk.Events)) {
-                    var events = objectsManager.Objects;
-                    events.Add(new TimedEvent(new SequenceTrackNameEvent(track.TrackName), 0));
-                }
-                trackChunks.Add(trackChunk);
-            }
-            //voice tracks
-            foreach (UPart part in project.parts) {
-                if (part is UVoicePart voicePart) {
-                    var trackChunk = trackChunks[voicePart.trackNo];
-                    var partOffset = part.position;
-                    using (var objectsManager = new TimedObjectsManager<TimedEvent>(trackChunk.Events)) {
-                        var events = objectsManager.Objects;
-                        foreach (UNote note in voicePart.notes) {
-                            //Ignore notes whose pitch is out of midi range
-                            if(note.tone < 0 || note.tone > 127){
-                                continue;
-                            }
-                            string lyric = note.lyric;
-                            if (lyric == "+~" || lyric == "+*") {
-                                lyric = "-";
-                            }
-                            events.Add(new TimedEvent(new LyricEvent(lyric), note.position + partOffset));
-                            events.Add(new TimedEvent(new NoteOnEvent((SevenBitNumber)(note.tone), (SevenBitNumber)45), note.position + partOffset));
-                            events.Add(new TimedEvent(new NoteOffEvent((SevenBitNumber)(note.tone), (SevenBitNumber)45), note.position + partOffset + note.duration));
-                        }
+
+            // Init Track Chunks
+            var trackChunks = project.tracks.Select(track => {
+                var chunk = new TrackChunk();
+                using var manager = new TimedObjectsManager<TimedEvent>(chunk.Events);
+                manager.Objects.Add(new TimedEvent(new SequenceTrackNameEvent(track.TrackName), 0));
+                return chunk;
+            }).ToList();
+
+            // Export Voice notes and Lyrics
+            const SevenBitNumber defaultVelocity = (SevenBitNumber)45;
+
+            foreach (var voicePart in project.parts.OfType<UVoicePart>()) {
+                if (voicePart.trackNo < 0 || voicePart.trackNo >= trackChunks.Count) {continue;}
+
+                var chunk = trackChunks[voicePart.trackNo];
+                using (var manager = new TimedObjectsManager<TimedEvent>(chunk.Events)) {
+                  var events = manager.Objects;
+                    int offset = voicePart.position;
+
+                   foreach (var note in voicePart.notes) {
+                        // Ignore notes with pitch out of midi range
+                        if(note.tone is < 0 or > 127) {continue;}
+                     
+                        var tone = (SevenBitNumber)note.tone;
+                        string lyric = (note.lyric is "+~" or "+*") ? "-" : note.lyric;
+                        long start = note.position + offset;
+
+                        events.Add(new TimedEvent(new LyricEvent(lyric), start));
+                        events.Add(new TimedEvent(new NoteOnEvent(tone, defaultVelocity), start));
+                        events.Add(new TimedEvent(new NoteOffEvent(tone, defaultVelocity), start + note.duration));
                     }
                 }
             }
             
-            foreach(TrackChunk trackChunk in trackChunks) {
-                midiFile.Chunks.Add(trackChunk);
-            }
+            midiFile.Chunks.AddRange(trackChunks);
+            midiFile.Write(filePath, overwrite: true, settings: new WritingSettings {
+                TextEncoding = Encoding.UTF8,
+            });
+        } // Save()
 
-            midiFile.Write(filePath,true,settings: new WritingSettings {
-                TextEncoding = System.Text.Encoding.UTF8,
-            }) ;
-        }
-    }
-}
+    } // class MidiWriter
+} // namespace Core.Format
