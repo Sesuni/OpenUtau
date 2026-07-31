@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Xml;
 using System.Xml.Serialization;
+using System.Linq;
+using System.Text;
 using OpenUtau.Core.Format.MusicXMLSchema;
 using OpenUtau.Core.Ustx;
 using Serilog;
@@ -208,11 +210,11 @@ namespace OpenUtau.Core.Format
         static public System.Text.Encoding DetectXMLEncoding(string file)
         {
             var detected = CharsetDetector.DetectFromFile(file).Detected;
-            return detected?.Confidence > 0.5 && detected.Encoding != null ? detected.Encoding : Encoding.UTF8;
+            return detected?.Confidence > 0.5 && detected.Encoding != null ? detected.Encoding : System.Text.Encoding.UTF8;
         }
 
         static public double? MeasureBPM(MusicXMLSchema.ScorePartwisePartMeasure measure)
-            => measure.Directions?
+            => (double?)measure.Directions?
                 .FirstOrDefault(direction => direction.Sound != null)?
                 .Sound.Tempo;
 

@@ -7,68 +7,53 @@ using NAudio.Wave;
 namespace OpenUtau.Core.Format {
     // Preliminary blocking Opus reader.
     public class OpusOggWaveReader : WaveStream {
-        WaveFormat waveFormat;
-        MemoryStream oggStream;
-        OpusDecoder decoder;
-        OpusOggReadStream decodeStream;
-        byte[] wavData;
+        private readonly byte[] wavData;
 
-        public OpusOggWaveReader(string oggFile) {
-            using (FileStream fileStream = new FileStream(oggFile, FileMode.Open, FileAccess.Read)) {
-                oggStream = new MemoryStream();
-                fileStream.CopyTo(oggStream);
-            }
-            oggStream.Seek(0, SeekOrigin.Begin);
-            waveFormat = new WaveFormat(48000, 16, 2);
-            decoder = new OpusDecoder(48000, 2);
-            decodeStream = new OpusOggReadStream(decoder, oggStream);
-        }
-
-        byte[] Decode() {
-            using (var wavStream = new MemoryStream()) {
-                var decoder = new OpusDecoder(48000, 2);
-                var oggIn = new OpusOggReadStream(decoder, oggStream);
-                while (oggIn.HasNextPacket) {
-                    short[] packet = oggIn.DecodeNextPacket();
-                    if (packet != null) {
-                        byte[] binary = ShortsToBytes(packet);
-                        wavStream.Write(binary, 0, binary.Length);
-                    }
-                }
-                return wavStream.ToArray();
-            }
-        }
-
-        public override WaveFormat WaveFormat => waveFormat;
-
+        public override WaveFormat WaveFormat { get; } = new WaveFormat(48000, 16, 2);
         public override long Length => wavData.LongLength;
-
-        public override TimeSpan TotalTime => decodeStream.TotalTime;
-
         public override long Position { get; set; }
 
-        public override int Read(byte[] buffer, int offset, int count) {
-            if (wavData == null) {
-                wavData = Decode();
-            }
-            int n = (int)Math.Min(wavData.Length - Position, count);
-            Array.Copy(wavData, Position, buffer, offset, n);
-            Position += n;
-            return n;
+        // Constructor: Decode locally to save memory
+        public OpusOggWaveReader(string oggFile) {
+            using var fileStream = File.OpenRead(oggFile);
+            using var oggStream = new MemoryStream();
+            fileStream.CopyTo(oggStream);
+            oggStream.Position = 0;
+            wavData = Decode(oggStream);
         }
 
-        static byte[] ShortsToBytes(short[] input) {
-            byte[] output = new byte[input.Length * sizeof(short) / sizeof(byte)];
-            for (int i = 0; i < input.Length; ++i) {
-                output[i * 2] = (byte)(input[i] & 0xFF);
-                output[i * 2 + 1] = (byte)((input[i] >> 8) & 0xFF);
+        // Decode oggStream to wavData
+        private static byte[] Decode(Stream oggStream) {
+            var decoder = new OpusDecoder(48000, 2);
+            var oggIn = new OpusOggReadStream(decoder, oggStream);
+            using var wavStream = new MemoryStream();
+
+            while (oggIn.HasNextPacket) {
+                short[] packet = oggIn.DecodeNextPacket();
+                if (packet != null) {
+                    byte[] binary = ShortsToBytes(packet);
+                    wavStream.Write(binary, 0, binary.Length);
+                }
             }
+            return wavStream.ToArray();
+        }
+
+
+        public override int Read(byte[] buffer, int offset, int count) {
+            int read = (int)Math.Min(wavData.Length - Position, count);
+            if (read <= 0) { return 0; }
+
+            Array.Copy(wavData, Position, buffer, offset, read);
+            Position += read;
+            return read;
+        }
+
+
+        static byte[] ShortsToBytes(short[] input) {
+            byte[] output = new byte[input.Length * sizeof(short)];
+            Buffer.BlockCopy(input, 0, output, 0, output.Length);
             return output;
         }
 
-        protected override void Dispose(bool disposing) {
-            oggStream.Dispose();
-            base.Dispose(disposing);
-        }
-    }
-}
+    } // class OpusOggWaveReader
+} // namespace .Core.Format

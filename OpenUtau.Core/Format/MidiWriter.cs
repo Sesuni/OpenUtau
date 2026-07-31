@@ -246,7 +246,7 @@ namespace OpenUtau.Core.Format {
             }).ToList();
 
             // Export Voice notes and Lyrics
-            const SevenBitNumber defaultVelocity = (SevenBitNumber)45;
+            SevenBitNumber defaultVelocity = (SevenBitNumber)45;
 
             foreach (var voicePart in project.parts.OfType<UVoicePart>()) {
                 if (voicePart.trackNo < 0 || voicePart.trackNo >= trackChunks.Count) {continue;}
@@ -272,7 +272,7 @@ namespace OpenUtau.Core.Format {
             }
             
             midiFile.Chunks.AddRange(trackChunks);
-            midiFile.Write(filePath, overwrite: true, settings: new WritingSettings {
+            midiFile.Write(filePath, overwriteFile: true, settings: new WritingSettings {
                 TextEncoding = Encoding.UTF8,
             });
         } // Save()
