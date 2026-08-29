@@ -2,140 +2,118 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
-
 using OpenUtau.Core.Ustx;
-
 //reference: https://github.com/sdercolin/utaformatix-data/blob/main/lib/csharp/UtaFormatix.Data
 
 namespace OpenUtau.Core.Format
 {
-    /// <summary>Note model.</summary>
-    ///
-    /// <param name="key">Semitone value of the note's key (Center C = 60).</param>
-    /// <param name="tickOn">Tick position of the note's start.</param>
-    /// <param name="tickOff">Tick position of the note's end.</param>
-    /// <param name="lyric">Lyric of the note.</param>
-    /// <param name="phoneme">Phoneme of the note (if available).</param>
-    public struct UfNote{
-        public int key;
-        public int tickOn;
-        public int tickOff;
-        public string lyric;
-        public string? phoneme;
+    public readonly struct UfNote
+    {
+        public int key { get; init; }
+        public int tickOn { get; init; }
+        public int tickOff { get; init; }
+        public string lyric { get; init; }
+        public string? phoneme { get; init; }
     }
 
-    /// <summary>Pitch data model. 
-    /// Only points with changed values are included.</summary>
-    ///
-    /// <param name="ticks">Tick positions of the data points.</param>
-    /// <param name="values">Semitone values of the data points.
-    /// Items could be `null` only when [isAbsolute] is true.
-    /// In this case, it represents the end of the previous value's lasting.</param>
-    /// <param name="isAbsolute">True if the semitone value is absolute,
-    /// otherwise it's relative to the note's key.</param>
-    public struct UfPitch{
-        public int[] ticks;
-        public double?[] values;
-        public bool isAbsolute;
+    public readonly struct UfPitch
+    {
+        public int[] ticks { get; init; }
+        public double?[] values { get; init; }
+        public bool isAbsolute { get; init; }
     }
 
-    /// <summary>Tempo label model.</summary>
-    ///
-    /// <param name="tickPosition">Tick position of the tempo label.</param>
-    /// <param name="bpm">Tempo in beats-per-minute.</param>
-    public struct UfTempo{
-        public int tickPosition;
-        public double bpm;
+    public readonly struct UfTempo
+    {
+        public int tickPosition { get; init; }
+        public double bpm { get; init; }
     }
 
-    /// <summary>Time signature model.</summary>
-    ///
-    /// <param name="measurePosition">Measure (bar) position of the time signature.</param>
-    /// <param name="numerator">Beats per measure.</param>
-    /// <param name="denominator">Note value per beat.</param>
-    public struct UfTimeSignature{
-        public int measurePosition; 
-        public int numerator; 
-        public int denominator;
+    public readonly struct UfTimeSignature
+    {
+        public int measurePosition { get; init; }
+        public int numerator { get; init; }
+        public int denominator { get; init; }
     }
 
-    /// <summary>Track model.</summary>
-    ///
-    /// <param name="name">Track name.</param>
-    /// <param name="notes">Notes in the track.</param>
-    /// <param name="pitch">Pitch data bound to the track (if any).</param>
-    public struct UfTrack{
-        public string name; 
-        public UfNote[] notes; 
-        public UfPitch? pitch;
+    public readonly struct UfTrack
+    {
+        public string name { get; init; }
+        public UfNote[] notes { get; init; }
+        public UfPitch? pitch { get; init; }
     }
 
-    /// <summary>Project model.</summary>
-    ///
-    /// <param name="name">Project name.</param>
-    /// <param name="tracks">List of track models in the project.</param>
-    /// <param name="timeSignatures">List of time signatures in the project.</param>
-    /// <param name="tempos">List of tempo labels in the project.</param>
-    /// <param name="measurePrefix">Count of measure prefixes (measures that cannot
-    /// contain notes, restricted by some editors).</param>
-    public struct UfProject{
-        public string name; 
-        public UfTrack[] tracks; 
-        public UfTimeSignature[]? timeSignatures; 
-        public UfTempo[] tempos; 
-        public int measurePrefix;
+    public readonly struct UfProject
+    {
+        public string name { get; init; }
+        public UfTrack[] tracks { get; init; }
+        public UfTimeSignature[]? timeSignatures { get; init; }
+        public UfTempo[] tempos { get; init; }
+        public int measurePrefix { get; init; }
     }
 
-    public struct UfFile{
-        public UfProject project;
-        public int formatVersion;
+    public readonly struct UfFile
+    {
+        public UfProject project { get; init; }
+        public int formatVersion { get; init; }
     }
+
 
     public static class Ufdata
     {
-        static UVoicePart ParsePart(UfTrack ufTrack, UProject project) {
-            var part = new UVoicePart();
-            part.name = ufTrack.name;
-            part.position = 0;
-            foreach(var ufNote in ufTrack.notes){
+        private static UVoicePart ParsePart(UfTrack ufTrack, UProject project)
+        {
+            var part = new UVoicePart
+            {
+                name = ufTrack.name,
+                position = 0
+            };
+            
+            foreach (var ufNote in ufTrack.notes)
+            {
                 var note = project.CreateNote(
                     ufNote.key,
                     ufNote.tickOn,
                     ufNote.tickOff - ufNote.tickOn
                 );
-                note.lyric = ufNote.lyric;
-                if (note.lyric == "-") {
-                    note.lyric = "+~";
-                }
+                
+                note.lyric = ufNote.lyric == "-" ? "+~" : ufNote.lyric;
                 part.notes.Add(note);
             }
-            part.Duration = ufTrack.notes[^1].tickOff;
-            return part;
-        }
-
-        public static UProject Load(string file){
-            UProject project = new UProject();
-            Ustx.AddDefaultExpressions(project);
-            project.FilePath = file;
-
-            var ufProject = JsonConvert.DeserializeObject<UfFile>(File.ReadAllText(file,Encoding.UTF8)).project;
             
-            //parse tempo
+            if (ufTrack.notes.Length > 0)
+            {
+                part.Duration = ufTrack.notes[^1].tickOff;
+            }
+                
+            return part;     
+        } // Ufdata.ParsePart
+
+
+        public static UProject Load(string file)
+        {
+            var project = new UProject { FilePath = file };
+            Ustx.AddDefaultExpressions(project);
+
+            var jsonText = File.ReadAllText(file, Encoding.UTF8);
+            var ufFile = JsonConvert.DeserializeObject<UfFile>(jsonText);
+            var ufProject = ufFile.project;
+            
             project.tempos=ufProject.tempos
-                .Select(t => new UTempo(t.tickPosition, t.bpm))
-                .ToList();
-            //parse timeSignature
+                ?.Select(t => new UTempo(t.tickPosition, t.bpm))
+                .ToList() ?? new();
+                
             project.timeSignatures=ufProject.timeSignatures
-                .Select(t => new UTimeSignature(t.measurePosition, t.numerator, t.denominator))
-                .ToList();
-            //parse tracks
-            var parts = ufProject.tracks
-                .Where(tr=>tr.notes.Length>0)
-                .Select(tr=>ParsePart(tr,project))
-                .ToList();
-            foreach (var part in parts) {
-                var track = new UTrack(project);
-                track.TrackNo = project.tracks.Count;
+                ?.Select(t => new UTimeSignature(t.measurePosition, t.numerator, t.denominator))
+                .ToList() ?? new();
+            
+            var validTracks = ufProject.tracks?.Where(tr => tr.notes?.Length > 0) ?? Enumerable.Empty<UfTrack>();
+            
+            foreach (var tr in validTracks) 
+            {
+                var part = ParsePart(tr, project);
+                var track = new UTrack(project) { TrackNo = project.tracks.Count };
+                
                 part.trackNo = track.TrackNo;
                 part.AfterLoad(project, track);
                 project.tracks.Add(track);
@@ -144,6 +122,7 @@ namespace OpenUtau.Core.Format
             
             project.ValidateFull();
             return project;
-        }
-    }
-}
+        } // Ufdata.Load
+        
+    } // class Ufdata
+} // namespace OpenUtau.Core.Format

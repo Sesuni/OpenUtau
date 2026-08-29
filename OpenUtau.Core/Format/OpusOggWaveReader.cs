@@ -38,6 +38,7 @@ namespace OpenUtau.Core.Format {
             return wavStream.ToArray();
         }
 
+        public override TimeSpan TotalTime => TimeSpan.FromSeconds((double)Length / WaveFormat.AverageBytesPerSecond);
 
         public override int Read(byte[] buffer, int offset, int count) {
             int read = (int)Math.Min(wavData.Length - Position, count);
